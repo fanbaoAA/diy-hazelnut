@@ -390,45 +390,239 @@ and mov_t = (e: ztyp, d: dir): option(ztyp) => {
   };
 };
 
+let rec t_action = (t: ztyp, a: action): option(ztyp) => {
+  switch (t) {
+  | Cursor(t) =>
+    switch (a) {
+    | Construct(Arrow) => Some(RArrow(t, Cursor(Hole)))
+    | Construct(Num) =>
+      if (t == Hole) {
+        Some(Cursor(Num));
+      } else {
+        None;
+      }
+    | Del => Some(Cursor(Hole))
+    | _ => None
+    }
+  | LArrow(z, h) =>
+    switch (t_action(z, a)) {
+    | None => None
+    | Some(z') => Some(LArrow(z', h))
+    }
+  | RArrow(h, z) =>
+    switch (t_action(z, a)) {
+    | None => None
+    | Some(z') => Some(RArrow(h, z'))
+    }
+  };
+};
+
 let rec syn_action =
-    (ctx: typctx, (e: zexp, t: htyp), a: action): option((zexp, htyp)) => {
+        (ctx: typctx, (e: zexp, t: htyp), a: action): option((zexp, htyp)) => {
   // Used to suppress unused variable warnings
   // Okay to remove
-  let _ = ctx;
   switch (a) {
   | Move(d) =>
     switch (mov(e, d)) {
     | Some(e') => Some((e', t))
     | _ => None
     }
-  | _ => switch(e) {
-    |Cursor(_)=>None 
-    |LAp(z,h)=> switch(syn(ctx,erase_exp(z))){
-      |None=>None 
-      |Some(t2)=> switch(syn_action(ctx,(z,t2),a)){
-        |None=>None 
-        |Some((z',t3))=>switch(match(t3)){
-          |Some(Arrow(t4,t5))=>
-          if(ana(ctx,h,t4)){
-            Some((LAp(z',h),t5))
+  | _ =>
+    switch (e) {
+    | Cursor(e) =>
+      switch (a) {
+      | Construct(Asc) => Some((RAsc(e, Cursor(t)), t))
+      | Construct(Var(x)) =>
+        switch (TypCtx.find_opt(x, ctx)) {
+        | None => None
+        | Some(t) =>
+          if (e == EHole) {
+            Some((Cursor(Var(x)), t));
+          } else {
+            None;
           }
-          else{None}
-          |_=>None
+        }
+      | Construct(Lam(x)) =>
+        if (e == EHole) {
+          Some((
+            RAsc(Lam(x, EHole), LArrow(Cursor(Hole), Hole)),
+            Arrow(Hole, Hole),
+          ));
+        } else {
+          None;
+        }
+      | Construct(Ap) =>
+        switch (match(t)) {
+        | Some(Arrow(_, t2)) => Some((RAp(e, Cursor(EHole)), t2))
+        | _ => Some((RAp(NEHole(e), Cursor(EHole)), Hole))
+        }
+      | Construct(Lit(n)) =>
+        if (e == EHole) {
+          Some((Cursor(Lit(n)), Num));
+        } else {
+          None;
+        }
+      | Construct(Plus) =>
+        if (consis(Num, t)) {
+          Some((RPlus(e, Cursor(EHole)), Num));
+        } else {
+          Some((RPlus(NEHole(e), Cursor(EHole)), Num));
+        }
+      | Construct(NEHole) => Some((NEHole(Cursor(e)), Hole))
+      | Del => Some((Cursor(EHole), Hole))
+      | Finish =>
+        switch (e) {
+        | NEHole(e) =>
+          switch (syn(ctx, e)) {
+          | None => None
+          | Some(t') => Some((Cursor(e), t'))
+          }
+        | _ => None
+        }
+      | _ => None
+      }
+    | LAp(z, h) =>
+      switch (syn(ctx, erase_exp(z))) {
+      | None => None
+      | Some(t2) =>
+        switch (syn_action(ctx, (z, t2), a)) {
+        | None => None
+        | Some((z', t3)) =>
+          switch (match(t3)) {
+          | Some(Arrow(t4, t5)) =>
+            if (ana(ctx, h, t4)) {
+              Some((LAp(z', h), t5));
+            } else {
+              None;
+            }
+          | _ => None
+          }
         }
       }
+    | RAp(h, z) =>
+      switch (syn(ctx, h)) {
+      | None => None
+      | Some(t2) =>
+        switch (match(t2)) {
+        | Some(Arrow(t3, t4)) =>
+          switch (ana_action(ctx, z, a, t3)) {
+          | None => None
+          | Some(z') => Some((RAp(h, z'), t4))
+          }
+        | _ => None
+        }
+      }
+    | LPlus(z, h) =>
+      switch (ana_action(ctx, z, a, Num)) {
+      | None => None
+      | Some(z') => Some((LPlus(z', h), Num))
+      }
+    | RPlus(h, z) =>
+      switch (ana_action(ctx, z, a, Num)) {
+      | None => None
+      | Some(z') => Some((RPlus(h, z'), Num))
+      }
+    | LAsc(z, h) =>
+      switch (ana_action(ctx, z, a, t)) {
+      | None => None
+      | Some(z') => Some((LAsc(z', h), t))
+      }
+    | RAsc(h, z) =>
+      switch (t_action(z, a)) {
+      | None => None
+      | Some(z') =>
+        if (ana(ctx, h, erase_typ(z'))) {
+          Some((RAsc(h, z'), erase_typ(z')));
+        } else {
+          None;
+        }
+      }
+    | NEHole(z) =>
+      switch (syn(ctx, erase_exp(z))) {
+      | None => None
+      | Some(t) =>
+        switch (syn_action(ctx, (z, t), a)) {
+        | None => None
+        | Some((z', _)) => Some((NEHole(z'), Hole))
+        }
+      }
+    | _ => None
     }
-    |_=>None
-  }
   };
 }
 
-and ana_action = (ctx: typctx, e: zexp, a: action, t: htyp): option(zexp) => {
+and ana_action = (ctx: typctx, z: zexp, a: action, t: htyp): option(zexp) => {
   // Used to suppress unused variable warnings
   // Okay to remove
-  let _ = ctx;
-  let _ = e;
-  let _ = a;
-  let _ = t;
-
-  raise(Unimplemented);
+  switch (a) {
+  | Move(d) => mov(z, d)
+  | _ =>
+    switch (z) {
+    | Cursor(e) =>
+      switch (a) {
+      | Construct(Asc) => Some(RAsc(e, Cursor(t)))
+      | Construct(Lam(x)) =>
+        if (e == EHole) {
+          switch (match(t)) {
+          | Some(_) => Some(Lam(x, Cursor(EHole)))
+          | _ =>
+            Some(NEHole(RAsc(Lam(x, EHole), LArrow(Cursor(Hole), Hole))))
+          };
+        } else {
+          None;
+        }
+      | Construct(Lit(n)) =>
+        if (e == EHole) {
+          if (consis(t, Num)) {
+            Some(Cursor(Lit(n)));
+          } else {
+            Some(NEHole(Cursor(Lit(n))));
+          };
+        } else {
+          None;
+        }
+      | Del => Some(Cursor(EHole))
+      | Finish =>
+        switch (e) {
+        | NEHole(e) =>
+          if (ana(ctx, e, t)) {
+            Some(Cursor(e));
+          } else {
+            None;
+          }
+        | _ => None
+        }
+      | _ => switch(syn(ctx,e)){
+        |None=>None 
+        |Some(t')=>switch(syn_action(ctx,(z,t'),a)){
+          |None=>None 
+          |Some((e',t''))=>if(consis(t'',t)){
+            Some(e')
+          }
+          else{None}
+        }
+      }
+      }
+    | Lam(x, e) =>
+      switch (match(t)) {
+      | Some(Arrow(t1, t2)) =>
+        switch (ana_action(TypCtx.add(x, t1, ctx), e, a, t2)) {
+        | Some(e') => Some(Lam(x, e'))
+        | None => None
+        }
+      | _ => None
+      }
+    | _ => 
+      switch(syn(ctx,erase_exp(z))){
+      |None=>None 
+      |Some(t')=>switch(syn_action(ctx,(z,t'),a)){
+        |None=>None 
+        |Some((e',t''))=>if(consis(t'',t)){
+          Some(e')
+        }
+        else{None}
+      }
+      }
+    }
+  };
 };
